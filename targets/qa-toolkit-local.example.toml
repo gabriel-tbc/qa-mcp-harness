@@ -1,0 +1,19 @@
+# Target template — copy to `qa-toolkit-local.toml` and set your local paths.
+#
+# Real target files (without the `.example` suffix) are gitignored: they hold
+# machine-specific paths, and possibly auth, so they stay local. The repo tracks
+# only templates like this one.
+#
+# The harness launches this command as a subprocess and speaks MCP over its
+# stdin/stdout. `command` points at the *server's own* venv python — the harness
+# venv and the server venv are independent.
+
+name = "qa-toolkit-local"
+transport = "stdio"
+
+[stdio]
+command = 'C:\path\to\qa-toolkit-mcp\.venv\Scripts\python.exe'
+args = ["-m", "qa_toolkit_mcp.server"]
+
+[stdio.env]
+QA_TOOLKIT_RUNS_DIR = 'C:\path\to\qa-toolkit-mcp\runs'

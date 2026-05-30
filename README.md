@@ -48,6 +48,10 @@ Authorization = "Bearer ..."
 
 No code changes — just a new target file and an env var. That's the whole design.
 
+Real target files are gitignored (they hold machine-specific paths, and possibly
+auth); the repo tracks only `*.example.toml` templates and `example-http.toml`.
+Copy a template to its real name to use it.
+
 ## Reports
 
 Each Layer 3 run writes a report artifact under `reports/` (gitignored):
@@ -68,6 +72,7 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e ".[dev]"          # add ,llm for Layers 3/4: pip install -e ".[dev,llm]"
 copy .env.example .env           # then set ANTHROPIC_API_KEY + HARNESS_MODEL for Layer 3
+copy targets\qa-toolkit-local.example.toml targets\qa-toolkit-local.toml  # then edit the paths
 ```
 
 ## Run
