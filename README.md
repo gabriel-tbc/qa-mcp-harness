@@ -10,11 +10,11 @@ reached purely through configuration.
 
 ## The three layers
 
-| Layer | Question it answers | Needs a model? | Status |
-|---|---|---|---|
-| **2 — Contract** | Do the MCP's tools return well-formed, consistent data (schema, response shape)? | No | ✅ working |
-| **3 — Tool-calling** | Given a prompt and the MCP's tools, does the model pick the right tool with the right arguments — reliably across repeated runs (pass-rate over N)? | Yes | ✅ working |
-| **4 — Output** | Is the model's final free-text answer correct, checked deterministically (no AI judge)? | Yes | 🚧 scaffold |
+| Layer | Question it answers | Needs a model? |
+|---|---|---|
+| **2 — Contract** | Do the MCP's tools return well-formed, consistent data (schema, response shape)? | No |
+| **3 — Tool-calling** | Given a prompt and the MCP's tools, does the model pick the right tool with the right arguments — reliably across repeated runs (pass-rate over N)? | Yes |
+| **4 — Output** | Is the model's final free-text answer correct, checked deterministically (no AI judge)? | Yes |
 
 (Layer 1 — the API behind the MCP — is tested at the API itself, outside this harness.)
 
