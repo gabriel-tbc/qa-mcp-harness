@@ -18,8 +18,9 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from harness.eval.dataset import EvalCase
-from harness.eval.matching import case_passes
+from harness.eval.matching import run_signals
 from harness.eval.schema_convert import to_anthropic_tools
+from harness.report import CaseReport, LayerReport, RunRecord, write_report
 
 # (prompt, anthropic_tools) -> (chosen_tool_name_or_None, tool_input_dict)
 ModelCall = Callable[[str, list[dict]], tuple[str | None, dict]]
@@ -35,6 +36,11 @@ class CaseResult:
     n_runs: int
     matches: int
     observed_tools: list[str | None] = field(default_factory=list)
+    # Richer per-run trail (tool + args + the two separate signals) that feeds
+    # the report. Kept additive so the legacy surface above stays unchanged.
+    runs: list[RunRecord] = field(default_factory=list)
+    expected_args_contains: dict | None = None
+    prompt: str = ""
 
     @property
     def pass_rate(self) -> float:
@@ -77,20 +83,25 @@ async def evaluate_case(
     if anthropic_tools is None:
         anthropic_tools = await _list_anthropic_tools(connect)
 
-    matches = 0
-    observed: list[str | None] = []
+    runs: list[RunRecord] = []
     for _ in range(n_runs):
         tool_name, tool_input = model_call(case.prompt, anthropic_tools)
-        observed.append(tool_name)
-        if case_passes(tool_name, tool_input, case.expected_tool, case.expected_args_contains):
-            matches += 1
+        tool_ok, args_ok = run_signals(
+            tool_name, tool_input, case.expected_tool, case.expected_args_contains
+        )
+        runs.append(
+            RunRecord(tool=tool_name, args=dict(tool_input or {}), tool_ok=tool_ok, args_ok=args_ok)
+        )
 
     return CaseResult(
         case_id=case.id,
         expected_tool=case.expected_tool,
         n_runs=n_runs,
-        matches=matches,
-        observed_tools=observed,
+        matches=sum(r.passed for r in runs),
+        observed_tools=[r.tool for r in runs],
+        runs=runs,
+        expected_args_contains=case.expected_args_contains,
+        prompt=case.prompt,
     )
 
 
@@ -111,6 +122,30 @@ async def evaluate_dataset(
         for case in cases
     ]
     return DatasetResult(results=results, threshold=threshold)
+
+
+def build_layer3_report(
+    ds: DatasetResult, *, target: str, model: str, n_runs: int
+) -> LayerReport:
+    """Map a `DatasetResult` into a persistable `LayerReport` (Layer 3)."""
+    cases = [
+        CaseReport(
+            id=r.case_id,
+            prompt=r.prompt,
+            expected_tool=r.expected_tool,
+            expected_args_contains=r.expected_args_contains,
+            runs=r.runs,
+        )
+        for r in ds.results
+    ]
+    return LayerReport(
+        layer=3,
+        target=target,
+        model=model,
+        n_runs=n_runs,
+        threshold=ds.threshold,
+        cases=cases,
+    )
 
 
 # ─── Real model wiring (only used when an API key is present) ─────────────────
@@ -192,6 +227,10 @@ def main() -> None:
         evaluate_dataset(connect, cases, model_call, n_runs=args.runs, threshold=args.threshold)
     )
     print(_format_report(ds))
+
+    report = build_layer3_report(ds, target=target.name, model=args.model, n_runs=args.runs)
+    json_path, md_path = write_report(report)
+    print(f"\nReport written:\n  {json_path}\n  {md_path}")
 
 
 if __name__ == "__main__":

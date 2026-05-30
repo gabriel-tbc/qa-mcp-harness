@@ -39,6 +39,27 @@ def _found_kv(obj: Any, key: str, value: Any) -> bool:
     return False
 
 
+def run_signals(
+    actual_tool: str | None,
+    actual_input: Any,
+    expected_tool: str,
+    expected_args_contains: dict | None,
+) -> tuple[bool, bool]:
+    """The two signals for one run, kept apart: ``(tool_ok, args_ok)``.
+
+    Collapsing these into one verdict (as `case_passes` does) hides WHICH half
+    failed — and that is precisely the diagnostic a report needs. `args_ok` is
+    `True` when no args were expected (nothing to check) or when the expected
+    args are present; it does NOT require the tool to match, so the two signals
+    are independent.
+    """
+    tool_ok = tool_matches(actual_tool, expected_tool)
+    args_ok = True if not expected_args_contains else args_contain(
+        actual_input or {}, expected_args_contains
+    )
+    return tool_ok, args_ok
+
+
 def case_passes(
     actual_tool: str | None,
     actual_input: Any,
@@ -46,8 +67,7 @@ def case_passes(
     expected_args_contains: dict | None,
 ) -> bool:
     """Full per-run verdict: right tool, and (if specified) expected args present."""
-    if not tool_matches(actual_tool, expected_tool):
-        return False
-    if expected_args_contains:
-        return args_contain(actual_input or {}, expected_args_contains)
-    return True
+    tool_ok, args_ok = run_signals(
+        actual_tool, actual_input, expected_tool, expected_args_contains
+    )
+    return tool_ok and args_ok
