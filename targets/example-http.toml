@@ -1,0 +1,15 @@
+# Example target for a REMOTE MCP over Streamable HTTP — the shape you'd use
+# at work, where you have the endpoint URL but not the server's source.
+#
+# Not used by default. To use it: set HARNESS_TARGET=example-http and fill in
+# real values (ideally via env-var substitution in your own tooling rather than
+# committing secrets).
+
+name = "example-http"
+transport = "http"
+
+[http]
+url = "https://your-mcp.example.com/mcp"
+
+[http.headers]
+Authorization = "Bearer REPLACE_ME"

@@ -1,0 +1,5 @@
+{"id": "TC-001", "prompt": "What test runs do I have available?", "expected_tool": "qa_list_runs"}
+{"id": "TC-002", "prompt": "Show me what failed in the run called search-25_classification", "expected_tool": "qa_get_run", "expected_args_contains": {"run_id": "search-25_classification"}}
+{"id": "TC-003", "prompt": "Compare search-25_classification against search-26_classification and tell me what regressed", "expected_tool": "qa_compare_runs"}
+{"id": "TC-004", "prompt": "Which runs belong to the api-regression suite from last week?", "expected_tool": "qa_list_runs", "expected_args_contains": {"suite": "api-regression"}}
+{"id": "TC-005", "prompt": "Give me the full report for run-2026-05-27-0900 including the tests that passed", "expected_tool": "qa_get_run", "expected_args_contains": {"run_id": "run-2026-05-27-0900", "include_passed": true}}
