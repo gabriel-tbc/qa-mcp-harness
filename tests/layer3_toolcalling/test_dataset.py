@@ -24,6 +24,21 @@ def test_expected_args_contains_is_parsed():
     assert cases["TC-001"].expected_args_contains is None
 
 
+def test_system_policy_and_override_optional_and_loaded(tmp_path):
+    p = tmp_path / "ds.jsonl"
+    p.write_text(
+        '{"id":"S1","prompt":"x","expected_tool":"t","system_policy":"default"}\n'
+        '{"id":"S2","prompt":"x","expected_tool":"t","system_prompt_override":"raw"}\n'
+        '{"id":"S3","prompt":"x","expected_tool":"t"}\n',
+        encoding="utf-8",
+    )
+    cases = {c.id: c for c in load_jsonl(p)}
+    assert cases["S1"].system_policy == "default"
+    assert cases["S1"].system_prompt_override is None
+    assert cases["S2"].system_prompt_override == "raw"
+    assert cases["S3"].system_policy is None and cases["S3"].system_prompt_override is None
+
+
 def test_missing_required_field_raises(tmp_path):
     bad = tmp_path / "bad.jsonl"
     bad.write_text('{"id": "X", "prompt": "no expected tool"}\n', encoding="utf-8")

@@ -10,13 +10,8 @@ import json
 
 from harness.eval.dataset import EvalCase
 from harness.eval.runner import build_layer3_report, evaluate_dataset
+from harness.providers.fake import FakeProvider
 from harness.report import CaseReport, RunRecord, render_markdown
-
-
-def _always(tool: str | None, args: dict | None = None):
-    def _call(prompt, tools):
-        return tool, (args or {})
-    return _call
 
 
 async def test_report_separates_tool_from_arg_failures(connect):
@@ -28,7 +23,7 @@ async def test_report_separates_tool_from_arg_failures(connect):
         expected_tool="qa_get_run",
         expected_args_contains={"run_id": "search-25_classification"},
     )
-    wrong_args = _always("qa_get_run", {"params": {"run_id": "nope"}})
+    wrong_args = FakeProvider.always_calls("qa_get_run", {"params": {"run_id": "nope"}})
     ds = await evaluate_dataset(connect, [case], wrong_args, n_runs=3, threshold=0.9)
     report = build_layer3_report(ds, target="t", model="m", n_runs=3)
 
@@ -41,7 +36,8 @@ async def test_report_separates_tool_from_arg_failures(connect):
 
 async def test_report_json_and_markdown_carry_the_signal(connect):
     case = EvalCase(id="C1", prompt="list the runs", expected_tool="qa_list_runs")
-    ds = await evaluate_dataset(connect, [case], _always("qa_list_runs"), n_runs=2, threshold=0.9)
+    provider = FakeProvider.always_calls("qa_list_runs")
+    ds = await evaluate_dataset(connect, [case], provider, n_runs=2, threshold=0.9)
     report = build_layer3_report(
         ds, target="qa-toolkit-local", model="claude-sonnet-4-6", n_runs=2
     )
@@ -73,6 +69,30 @@ def test_arg_accuracy_is_none_when_no_args_expected():
     assert c.arg_accuracy is None
     assert c.tool_selection_rate == 1.0
     assert c.consistency == 1.0
+
+
+def test_runrecord_to_dict_carries_rich_trace():
+    """The enriched RunRecord persists the full trace (Layer 4 + hallucinations
+    + size + latency need it). Verdict fields and trace fields coexist."""
+    r = RunRecord(
+        tool="qa_list_runs",
+        args={},
+        tool_ok=True,
+        args_ok=True,
+        final_text="here are your runs",
+        stop_reason="end_turn",
+        input_tokens=12,
+        output_tokens=4,
+        latency_ms=123.4,
+        error=None,
+    )
+    d = r.to_dict()
+    assert d["final_text"] == "here are your runs"
+    assert d["stop_reason"] == "end_turn"
+    assert d["input_tokens"] == 12
+    assert d["output_tokens"] == 4
+    assert d["latency_ms"] == 123.4
+    assert d["passed"] is True
 
 
 def test_consistency_reflects_wavering():

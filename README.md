@@ -104,7 +104,8 @@ pytest tests/layer3_toolcalling -m "not integration"
 harness/
   config.py              Target loading (stdio/http) + settings
   clients/mcp_client.py  open_session(): transport-agnostic MCP client (keystone)
-  eval/                  Layer 3 engine: dataset, schema convert, matching, runner
+  providers/             Model-agnostic boundary: ToolSpec/ModelResponse/Provider + adapters
+  eval/                  Layer 3 engine: dataset, matching, runner, oracles, agent loop
   report.py              Report model + JSON/Markdown rendering (shared by Layers 3-4)
 targets/                 One TOML per MCP under test
 tests/
@@ -120,11 +121,21 @@ v0.1.
 
 - **Layer 2 (contract)** — working against a local stdio MCP.
 - **Layer 3 (tool-calling)** — working: pass-rate runner with separate tool- and
-  argument-accuracy metrics and JSON + Markdown reports; the real-LLM run is gated
-  behind `ANTHROPIC_API_KEY` + `HARNESS_MODEL`, while the deterministic machinery is
-  covered by fake-model tests.
-- **Layer 4 (output)** — scaffolded: design fixed (full agent loop + ground-truth
-  oracle); implementation is the next slice.
+  argument-accuracy metrics and JSON + Markdown reports. Model-agnostic behind a
+  **provider layer** (`anthropic` · `openai` · `gemini` · `ollama`, selected by
+  `--provider`/`HARNESS_PROVIDER`); the core speaks only neutral `ToolSpec` /
+  `ModelResponse`. Adding Gemini (a third wire format) touched only its adapter
+  + the registry — runner/matching/report untouched, the proof the abstraction
+  holds. Reports capture the full per-run trace (final text, tokens,
+  latency, stop reason, error). Real-LLM runs are gated behind a key; the
+  deterministic machinery is covered by fake-provider tests.
+- **Layer 4 (output)** — **minimum vertical working**: real agent loop runs
+  against the real MCP; ground-truth oracle computes the expected value from
+  the MCP itself (no hardcoded expectations, no AI judge); `extract_number`
+  pulls the model's claim from prose with word boundaries (no substring
+  collisions). Signals separated: `tools_called_ok` vs `oracle_ok`. Tested
+  end-to-end with a scripted FakeProvider against the real MCP; live-model
+  multi-turn for Anthropic/OpenAI/Gemini is a future slice.
 
 ## License
 

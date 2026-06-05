@@ -1,13 +1,24 @@
 """Load Layer 3 eval datasets (JSONL).
 
 Each line is one case:
-    {"id", "prompt", "expected_tool", "expected_args_contains"?}
+    {
+        "id", "prompt", "expected_tool",
+        "expected_args_contains"?,        # arg-accuracy expectation
+        "system_policy"?,                  # name of a file in system_prompts/
+        "system_prompt_override"?          # one-off; substitutes the policy
+    }
+
+System prompt composition (see harness/eval/prompts.py):
+- `system_policy` references a suite-level policy file (versioned, reusable).
+- `system_prompt_override` is per-case and SUBSTITUTES the policy (not append).
+  Substitution is deliberate: silent contradictions are the worst eval bug.
+- If neither is set, the call goes out with no system prompt — a useful baseline.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -17,6 +28,8 @@ class EvalCase:
     prompt: str
     expected_tool: str
     expected_args_contains: dict | None = None
+    system_policy: str | None = None
+    system_prompt_override: str | None = None
 
 
 def load_jsonl(path: str | Path) -> list[EvalCase]:
@@ -40,6 +53,8 @@ def load_jsonl(path: str | Path) -> list[EvalCase]:
                 prompt=obj["prompt"],
                 expected_tool=obj["expected_tool"],
                 expected_args_contains=obj.get("expected_args_contains"),
+                system_policy=obj.get("system_policy"),
+                system_prompt_override=obj.get("system_prompt_override"),
             )
         )
     return cases

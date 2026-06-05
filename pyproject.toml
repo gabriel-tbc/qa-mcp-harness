@@ -16,8 +16,12 @@ dev = [
     "pytest-asyncio>=0.23.0",
 ]
 # Layer 3 (tool-calling evals) drives a real model. Install with: pip install -e ".[dev,llm]"
+# - anthropic: the paid-API provider.
+# - openai:    used as the client for the local Ollama provider (OpenAI-compatible API).
 llm = [
     "anthropic>=0.40.0",
+    "openai>=1.30.0",
+    "google-genai>=0.3.0",
 ]
 
 [build-system]

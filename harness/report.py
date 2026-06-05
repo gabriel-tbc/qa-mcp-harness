@@ -23,13 +23,28 @@ from pathlib import Path
 
 @dataclass
 class RunRecord:
-    """One model invocation within a case: what the model chose, and whether it
-    matched the two expectations (tool name, and arguments) — kept apart."""
+    """One model invocation within a case.
+
+    The verdict fields (`tool`/`args`/`tool_ok`/`args_ok`) are the Layer 3 signal,
+    kept apart so a report shows WHICH half failed. The rest is the rich trace
+    captured from the model's `ModelResponse` — present so reports can answer
+    later questions (hallucinations need `final_text`; response size needs
+    tokens; response time needs `latency_ms`) without a structural limit. All
+    trace fields are optional so records can be built from partial data."""
 
     tool: str | None
     args: dict
     tool_ok: bool
     args_ok: bool
+    # Rich trace (optional; populated from ModelResponse when available).
+    final_text: str = ""
+    stop_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    latency_ms: float | None = None
+    error: str | None = None
+    # Knob used for this run — kept on the record so a number is never orphan.
+    system_prompt: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -42,6 +57,13 @@ class RunRecord:
             "tool_ok": self.tool_ok,
             "args_ok": self.args_ok,
             "passed": self.passed,
+            "final_text": self.final_text,
+            "stop_reason": self.stop_reason,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "latency_ms": self.latency_ms,
+            "error": self.error,
+            "system_prompt": self.system_prompt,
         }
 
 
@@ -96,6 +118,18 @@ class CaseReport:
         counts = Counter(r.tool for r in self.runs)
         return counts.most_common(1)[0][1] / len(self.runs)
 
+    @property
+    def mean_latency_ms(self) -> float | None:
+        """Mean model latency across runs that reported it (None if none did)."""
+        vals = [r.latency_ms for r in self.runs if r.latency_ms is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    @property
+    def total_output_tokens(self) -> int | None:
+        """Sum of output tokens across runs that reported them (response size)."""
+        vals = [r.output_tokens for r in self.runs if r.output_tokens is not None]
+        return sum(vals) if vals else None
+
     def passed(self, threshold: float) -> bool:
         return self.pass_rate >= threshold
 
@@ -109,6 +143,8 @@ class CaseReport:
             "arg_accuracy": self.arg_accuracy,
             "pass_rate": self.pass_rate,
             "consistency": self.consistency,
+            "mean_latency_ms": self.mean_latency_ms,
+            "total_output_tokens": self.total_output_tokens,
             "runs": [r.to_dict() for r in self.runs],
         }
 
@@ -123,6 +159,9 @@ class LayerReport:
     n_runs: int
     threshold: float
     cases: list[CaseReport]
+    # Experiment-level knob: same temperature for every case in the run, so
+    # accuracy is comparable. None = the provider's default.
+    temperature: float | None = None
     generated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
@@ -157,6 +196,12 @@ class LayerReport:
             return None
         return sum(r.args_ok for r in runs) / len(runs)
 
+    @property
+    def mean_latency_ms(self) -> float | None:
+        """Mean model latency over every run that reported it."""
+        vals = [r.latency_ms for c in self.cases for r in c.runs if r.latency_ms is not None]
+        return sum(vals) / len(vals) if vals else None
+
     def to_dict(self) -> dict:
         return {
             "layer": self.layer,
@@ -165,12 +210,14 @@ class LayerReport:
             "model": self.model,
             "n_runs": self.n_runs,
             "threshold": self.threshold,
+            "temperature": self.temperature,
             "summary": {
                 "cases": len(self.cases),
                 "cases_passed": sum(c.passed(self.threshold) for c in self.cases),
                 "accuracy": self.accuracy,
                 "tool_selection_rate": self.tool_selection_rate,
                 "arg_accuracy": self.arg_accuracy,
+                "mean_latency_ms": self.mean_latency_ms,
             },
             "cases": [c.to_dict() for c in self.cases],
         }
@@ -181,6 +228,10 @@ class LayerReport:
 
 def _pct(x: float | None) -> str:
     return "n/a" if x is None else f"{x:.0%}"
+
+
+def _ms(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:.0f}ms"
 
 
 def _cell(args: dict) -> str:
@@ -197,7 +248,8 @@ def render_markdown(report: LayerReport) -> str:
         f"# Layer {r.layer} — Tool-calling report",
         "",
         f"`target={r.target}` · `model={r.model}` · `n={r.n_runs}` · "
-        f"`threshold={r.threshold:.0%}` · {r.generated_at}",
+        f"`threshold={r.threshold:.0%}` · `temperature="
+        f"{'default' if r.temperature is None else r.temperature}` · {r.generated_at}",
         "",
         "## Summary",
         "",
@@ -208,6 +260,7 @@ def render_markdown(report: LayerReport) -> str:
         f"{sum(c.passed(r.threshold) for c in r.cases)}/{len(r.cases)} ({_pct(r.accuracy)}) |",
         f"| tool-selection rate | {_pct(r.tool_selection_rate)} |",
         f"| arg-accuracy (where tool ok) | {_pct(r.arg_accuracy)} |",
+        f"| mean latency | {_ms(r.mean_latency_ms)} |",
         "",
         "## Cases",
     ]
@@ -219,10 +272,12 @@ def render_markdown(report: LayerReport) -> str:
         expected = f"`{c.expected_tool}`"
         if c.expected_args_contains is not None:
             expected += f" · args ⊇ `{json.dumps(c.expected_args_contains, ensure_ascii=False)}`"
+        lat_part = f" · ~{_ms(c.mean_latency_ms)}" if c.mean_latency_ms is not None else ""
         out += [
             "",
             f"### {c.id} — {verdict} "
-            f"(tool {_pct(c.tool_selection_rate)}{args_part} · consistency {_pct(c.consistency)})",
+            f"(tool {_pct(c.tool_selection_rate)}{args_part} · consistency {_pct(c.consistency)}"
+            f"{lat_part})",
             f"- **prompt:** {c.prompt}",
             f"- **expected:** {expected}",
             "",

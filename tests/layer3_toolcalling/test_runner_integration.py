@@ -1,8 +1,8 @@
-"""Layer 3 integration test — drives a REAL model.
+"""Layer 3 integration test — drives a REAL model via the provider registry.
 
 Skipped automatically unless BOTH ANTHROPIC_API_KEY and HARNESS_MODEL are set.
 This is the only test that costs money and exercises non-determinism, so it
-lives behind a gate; the deterministic machinery is covered by the fake-model
+lives behind a gate; the deterministic machinery is covered by the fake-provider
 tests.
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from harness.eval.dataset import load_jsonl
-from harness.eval.runner import anthropic_model_call, evaluate_dataset
+from harness.eval.runner import evaluate_dataset
 
 DATASET = Path(__file__).parent / "datasets" / "qa_toolkit.example.jsonl"
 
@@ -30,12 +30,14 @@ _HAVE_MODEL = bool(os.environ.get("HARNESS_MODEL"))
 )
 async def test_real_model_tool_selection(connect):
     pytest.importorskip("anthropic")
+    from harness.providers.registry import build_provider
+
     cases = load_jsonl(DATASET)
-    model_call = anthropic_model_call(
-        os.environ["HARNESS_MODEL"], os.environ["ANTHROPIC_API_KEY"]
+    provider = build_provider(
+        "anthropic", os.environ["HARNESS_MODEL"], api_key=os.environ["ANTHROPIC_API_KEY"]
     )
     # Modest N to keep cost low in CI; raise locally for tighter statistics.
-    ds = await evaluate_dataset(connect, cases, model_call, n_runs=3, threshold=0.9)
+    ds = await evaluate_dataset(connect, cases, provider, n_runs=3, threshold=0.9)
 
     # We don't hard-assert 100% (that's the metric we're MEASURING, not a gate),
     # but a well-designed MCP should comfortably select the obvious tool. We
