@@ -1,0 +1,23 @@
+# Target template for the Layer 5 red-team toy MCP (vuln-lab).
+#
+# Copy to `vuln-lab.toml` (gitignored) and point `command` at a Python that has
+# the `mcp` package — the harness venv is fine, since vuln-lab only needs FastMCP.
+# The toy server is launched by FILE PATH so it works without being installed.
+#
+# `VULN_LAB_DATASET` tells the server which injection corpus to serve documents
+# from — use the SAME file you pass to `runner_l5`, so payloads and cases agree.
+#
+# Run from the repo root, e.g.:
+#   $env:HARNESS_TARGET = "vuln-lab"
+#   python -m harness.eval.runner_l5 tests/layer5_security/datasets/injection_corpus.example.jsonl `
+#       --provider ollama --model qwen2.5 -n 5
+
+name = "vuln-lab"
+transport = "stdio"
+
+[stdio]
+command = 'C:\path\to\qa-mcp-harness\.venv\Scripts\python.exe'
+args = ["vuln_lab/server.py"]
+
+[stdio.env]
+VULN_LAB_DATASET = 'tests/layer5_security/datasets/injection_corpus.example.jsonl'
