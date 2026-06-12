@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from harness.providers.base import Provider, ToolCall, ToolResult, ToolSpec
+from harness.providers.base import ModelResponse, Provider, ToolCall, ToolResult, ToolSpec
 
 DEFAULT_MAX_ROUNDS = 6
 
@@ -61,6 +61,21 @@ def _result_text(call_result: Any) -> tuple[str, bool]:
     return "\n".join(parts), bool(getattr(call_result, "isError", False))
 
 
+def _ensure_call_ids(tool_calls: list[ToolCall], round_no: int) -> None:
+    """Give every tool call a stable id so the assistant turn and its tool
+    results can be correlated when we feed them back (some providers omit ids).
+    Mutates in place; real provider ids are kept, only missing ones are filled."""
+    for i, call in enumerate(tool_calls):
+        if call.id is None:
+            call.id = f"call_{round_no}_{i}"
+
+
+def _assistant_turn(resp: ModelResponse) -> dict:
+    """The neutral history item for an assistant message: the tool calls it made
+    (with ids) plus any text. Providers render this back into their wire format."""
+    return {"role": "assistant", "tool_calls": list(resp.tool_calls), "content": resp.final_text}
+
+
 async def run_agent_turn(
     session: Any,
     provider: Provider,
@@ -72,12 +87,13 @@ async def run_agent_turn(
 ) -> AgentOutcome:
     """Drive `provider` and the MCP `session` until the model produces final text.
 
-    Stops on: final text, max rounds reached, or recorded error. The conversation
-    history is opaque to this function — the provider builds it internally; we
-    only pass back the neutral ToolResults of the calls just made.
+    Stops on: final text, max rounds reached, or recorded error. This function
+    OWNS the conversation as a neutral history (user → assistant(tool_calls) →
+    tool(results) → …); each provider renders that history into its own wire
+    format. The loop never holds a provider-specific message.
     """
     out = AgentOutcome()
-    history: list[dict] = []  # provider-owned; we never inspect it
+    history: list[dict] = [{"role": "user", "content": prompt}]
 
     # ── Round 1: the initial completion ───────────────────────────────────────
     try:
@@ -91,6 +107,8 @@ async def run_agent_turn(
     out.input_tokens = resp.usage.input_tokens
     out.output_tokens = resp.usage.output_tokens
     out.latency_ms = resp.latency_ms
+    _ensure_call_ids(resp.tool_calls, out.rounds)
+    history.append(_assistant_turn(resp))
 
     while True:
         if resp.error:
@@ -146,3 +164,6 @@ async def run_agent_turn(
             out.output_tokens = (out.output_tokens or 0) + resp.usage.output_tokens
         if resp.latency_ms is not None:
             out.latency_ms = (out.latency_ms or 0) + resp.latency_ms
+        history.append({"role": "tool", "results": results})
+        _ensure_call_ids(resp.tool_calls, out.rounds)
+        history.append(_assistant_turn(resp))

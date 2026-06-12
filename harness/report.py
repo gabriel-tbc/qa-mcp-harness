@@ -316,3 +316,101 @@ def write_report(report: LayerReport, base_dir: str | Path = "reports") -> tuple
     )
     md_path.write_text(render_markdown(report), encoding="utf-8")
     return json_path, md_path
+
+
+# ─── Layer 4 rendering (output / free-text correctness) ──────────────────────
+#
+# Layer 4 records a different shape (final_text + checks, not tool/args), so it
+# gets its own renderer. It reads a plain report dict (built in runner_l4), which
+# keeps this function pure and testable from a literal dict — no model, no engine.
+
+
+def _checks_cell(checks: list[dict]) -> str:
+    if not checks:
+        return "—"
+    parts = [
+        f"{c.get('name')} exp={c.get('expected')} obs={c.get('observed')} "
+        f"{'✓' if c.get('passed') else '✗'}"
+        for c in checks
+    ]
+    return "; ".join(parts).replace("|", "\\|")
+
+
+def _answer_cell(final_text: str, error: str | None) -> str:
+    if error:
+        return ("⚠ " + error).replace("|", "\\|")[:80]
+    s = " ".join((final_text or "").split())  # collapse newlines for the table
+    if len(s) > 70:
+        s = s[:67] + "..."
+    return s.replace("|", "\\|") or "∅"
+
+
+def render_markdown_l4(d: dict) -> str:
+    """Render a Layer 4 report dict to Markdown. Shows, per run: rounds, the two
+    separate signals (tools-called / oracle), every Check (expected vs observed),
+    and the model's answer — the evidence the README asks Layer 4 to surface."""
+    s = d.get("summary", {})
+    hdr_temp = "default" if d.get("temperature") is None else d["temperature"]
+    out: list[str] = [
+        "# Layer 4 — Output report",
+        "",
+        f"`target={d['target']}` · `model={d['model']}` · `n={d['n_runs']}` · "
+        f"`threshold={d['threshold']:.0%}` · `temperature={hdr_temp}` · {d['generated_at']}",
+        "",
+        "## Summary",
+        "",
+        "| metric | value |",
+        "|---|---|",
+        f"| cases | {s.get('cases', 0)} |",
+        f"| cases passing threshold | {s.get('cases_passed', 0)}/{s.get('cases', 0)} "
+        f"({_pct(s.get('accuracy'))}) |",
+        f"| oracle rate (all runs) | {_pct(s.get('oracle_rate'))} |",
+        f"| tool-use rate (all runs) | {_pct(s.get('tool_use_rate'))} |",
+        f"| mean latency | {_ms(s.get('mean_latency_ms'))} |",
+        "",
+        "## Cases",
+    ]
+    threshold = d["threshold"]
+    for c in d.get("cases", []):
+        runs = c.get("runs", [])
+        n = len(runs)
+        n_pass = sum(1 for r in runs if r.get("passed"))
+        n_oracle = sum(1 for r in runs if r.get("oracle_ok"))
+        n_tools = sum(1 for r in runs if r.get("tools_called_ok"))
+        lat_vals = [r["latency_ms"] for r in runs if r.get("latency_ms") is not None]
+        mean_lat = sum(lat_vals) / len(lat_vals) if lat_vals else None
+        verdict = "PASS" if c.get("pass_rate", 0.0) >= threshold else "FAIL"
+        lat_part = f" · ~{_ms(mean_lat)}" if mean_lat is not None else ""
+        out += [
+            "",
+            f"### {c['id']} — {verdict} "
+            f"(pass-rate {n_pass}/{n} · oracle {n_oracle}/{n} · tools {n_tools}/{n}{lat_part})",
+            f"- **prompt:** {c['prompt']}",
+            "",
+            "| # | rounds | tools | oracle | checks | answer |",
+            "|---|---|---|---|---|---|",
+        ]
+        for i, r in enumerate(runs, start=1):
+            out.append(
+                f"| {i} | {r.get('rounds', '')} | "
+                f"{'✓' if r.get('tools_called_ok') else '✗'} | "
+                f"{'✓' if r.get('oracle_ok') else '✗'} | "
+                f"{_checks_cell(r.get('checks', []))} | "
+                f"{_answer_cell(r.get('final_text', ''), r.get('error'))} |"
+            )
+    out.append("")
+    return "\n".join(out)
+
+
+def write_report_l4(d: dict, base_dir: str | Path = "reports") -> tuple[Path, Path]:
+    """Persist a Layer 4 report dict as `.json` + `.md` under
+    `base_dir/layer4/<timestamp>__<target>__<model>.*`. Returns the two paths."""
+    out_dir = Path(base_dir) / "layer4"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = d["generated_at"].replace("-", "").replace(":", "")
+    stem = f"{ts}__{_slug(d['target'])}__{_slug(d['model'])}"
+    json_path = out_dir / f"{stem}.json"
+    md_path = out_dir / f"{stem}.md"
+    json_path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+    md_path.write_text(render_markdown_l4(d), encoding="utf-8")
+    return json_path, md_path

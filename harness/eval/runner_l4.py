@@ -18,10 +18,11 @@ half broke, exactly like the Layer 3 signal separation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from harness.eval.agent_loop import AgentOutcome, run_agent_turn
-from harness.eval.dataset_l4 import CheckSpec, EvalCaseL4, get_path
+from harness.eval.dataset_l4 import CheckSpec, EvalCaseL4, get_path, load_l4_jsonl
 from harness.eval.oracles import Check, ground_truth, number_check
 from harness.eval.prompts import resolve_system_prompt
 from harness.providers.base import Provider, ToolSpec
@@ -205,3 +206,139 @@ async def evaluate_dataset_l4(
         await evaluate_case_l4(connect, c, provider, n_runs=n_runs) for c in cases
     ]
     return L4DatasetResult(results=results, threshold=threshold)
+
+
+def build_layer4_report(
+    result: L4DatasetResult,
+    *,
+    target: str,
+    model: str,
+    n_runs: int,
+    temperature: float | None = None,
+) -> dict:
+    """Map an L4DatasetResult into a persistable report dict (mirrors Layer 3's
+    build_layer3_report). Kept as a plain dict so the renderer stays pure."""
+    all_runs = [r for c in result.results for r in c.runs]
+    lat_vals = [r.latency_ms for r in all_runs if r.latency_ms is not None]
+    return {
+        "layer": 4,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "target": target,
+        "model": model,
+        "n_runs": n_runs,
+        "threshold": result.threshold,
+        "temperature": temperature,
+        "summary": {
+            "cases": len(result.results),
+            "cases_passed": sum(c.passed(result.threshold) for c in result.results),
+            "accuracy": result.accuracy,
+            "oracle_rate": (sum(r.oracle_ok for r in all_runs) / len(all_runs)) if all_runs else 0.0,
+            "tool_use_rate": (
+                sum(r.tools_called_ok for r in all_runs) / len(all_runs) if all_runs else 0.0
+            ),
+            "mean_latency_ms": (sum(lat_vals) / len(lat_vals)) if lat_vals else None,
+        },
+        "cases": [c.to_dict() for c in result.results],
+    }
+
+
+# ─── CLI ─────────────────────────────────────────────────────────────────────
+
+
+def _format_report_l4(result: L4DatasetResult) -> str:
+    lines = [
+        f"Layer 4 accuracy: {result.accuracy:.0%} "
+        f"(threshold {result.threshold:.0%}, {len(result.results)} cases)",
+        "",
+    ]
+    for c in result.results:
+        n = len(c.runs)
+        mark = "PASS" if c.passed(result.threshold) else "FAIL"
+        lines.append(
+            f"  [{mark}] {c.case_id}: pass {sum(r.passed for r in c.runs)}/{n} · "
+            f"oracle {sum(r.oracle_ok for r in c.runs)}/{n} · "
+            f"tools {sum(r.tools_called_ok for r in c.runs)}/{n}"
+        )
+    return "\n".join(lines)
+
+
+def main() -> None:
+    import argparse
+    import asyncio
+    import os
+
+    from harness.clients.mcp_client import open_session
+    from harness.config import active_target, anthropic_api_key
+    from harness.providers.registry import build_provider
+    from harness.report import write_report_l4
+
+    parser = argparse.ArgumentParser(
+        description="Run a Layer 4 output eval (full agent loop + ground-truth oracle)."
+    )
+    parser.add_argument("dataset", help="Path to a Layer 4 .jsonl dataset")
+    parser.add_argument("-n", "--runs", type=int, default=3, help="Runs per case")
+    parser.add_argument("-t", "--threshold", type=float, default=0.9)
+    parser.add_argument(
+        "--temperature", type=float, default=None,
+        help="Sampling temperature (None = provider default); recorded in the report.",
+    )
+    parser.add_argument(
+        "-m", "--model", default=os.environ.get("HARNESS_MODEL"),
+        help="Model id (or set HARNESS_MODEL)",
+    )
+    parser.add_argument(
+        "-p", "--provider",
+        default=os.environ.get("HARNESS_PROVIDER", "anthropic"),
+        choices=["anthropic", "openai", "gemini", "ollama"],
+        help="Model provider. 'anthropic'/'openai'/'gemini' are paid APIs; "
+             "'ollama' is local and free. Or set HARNESS_PROVIDER.",
+    )
+    args = parser.parse_args()
+
+    if not args.model:
+        raise SystemExit("No model: pass --model or set HARNESS_MODEL.")
+
+    if args.provider == "anthropic":
+        api_key = anthropic_api_key()
+    elif args.provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY")
+    elif args.provider == "gemini":
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    else:  # ollama is local, no key
+        api_key = None
+
+    try:
+        provider = build_provider(
+            args.provider,
+            args.model,
+            api_key=api_key,
+            base_url=os.environ.get("OLLAMA_BASE_URL"),
+            temperature=args.temperature,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+
+    target = active_target()
+    cases = load_l4_jsonl(args.dataset)
+
+    def connect():
+        return open_session(target)
+
+    result = asyncio.run(
+        evaluate_dataset_l4(connect, cases, provider, n_runs=args.runs, threshold=args.threshold)
+    )
+    print(_format_report_l4(result))
+
+    report = build_layer4_report(
+        result,
+        target=target.name,
+        model=f"{provider.name}:{provider.model}",
+        n_runs=args.runs,
+        temperature=args.temperature,
+    )
+    json_path, md_path = write_report_l4(report)
+    print(f"\nReport written:\n  {json_path}\n  {md_path}")
+
+
+if __name__ == "__main__":
+    main()

@@ -49,7 +49,7 @@ def _parse_openai_response(response: Any) -> ModelResponse:
             args = json.loads(tc.function.arguments or "{}")
         except (json.JSONDecodeError, TypeError):
             args = {}
-        tool_calls.append(ToolCall(tc.function.name, args))
+        tool_calls.append(ToolCall(tc.function.name, args, id=getattr(tc, "id", None)))
     usage_obj = getattr(response, "usage", None)
     usage = Usage(
         input_tokens=getattr(usage_obj, "prompt_tokens", None),
@@ -62,6 +62,70 @@ def _parse_openai_response(response: Any) -> ModelResponse:
         usage=usage,
         raw=response,
     )
+
+
+def _assistant_message(tool_calls: list[ToolCall], content: str) -> dict:
+    """Reconstruct the assistant turn the model produced, in OpenAI wire form.
+    `content` may be empty when the turn was pure tool_calls."""
+    msg: dict = {"role": "assistant", "content": content or ""}
+    if tool_calls:
+        msg["tool_calls"] = [
+            {
+                "id": tc.id or f"call_{i}",
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                },
+            }
+            for i, tc in enumerate(tool_calls)
+        ]
+    return msg
+
+
+def _tool_messages(results: list[ToolResult]) -> list[dict]:
+    """One `role=tool` message per executed call; `tool_call_id` correlates it
+    with the assistant's tool_call that requested it."""
+    return [
+        {
+            "role": "tool",
+            "tool_call_id": r.call_id or f"call_{i}",
+            "content": r.content_text,
+        }
+        for i, r in enumerate(results)
+    ]
+
+
+def _build_continue_messages(
+    history: list[dict],
+    tool_results: list[ToolResult],
+    *,
+    system_prompt: str | None = None,
+) -> list[dict]:
+    """Render the loop's NEUTRAL agent history + the freshest tool results into
+    the OpenAI `messages` list. SDK-free, so it is unit-tested without `openai`.
+
+    Neutral history items (built by `agent_loop.run_agent_turn`):
+        {"role": "user", "content": str}
+        {"role": "assistant", "tool_calls": list[ToolCall], "content": str}
+        {"role": "tool", "results": list[ToolResult]}
+    `tool_results` is the latest batch, not yet folded into `history`.
+    """
+    messages: list[dict] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    for turn in history:
+        role = turn.get("role")
+        if role == "user":
+            messages.append({"role": "user", "content": turn.get("content", "")})
+        elif role == "assistant":
+            messages.append(
+                _assistant_message(turn.get("tool_calls") or [], turn.get("content") or "")
+            )
+        elif role == "tool":
+            messages.extend(_tool_messages(turn.get("results") or []))
+    messages.extend(_tool_messages(tool_results))
+    return messages
 
 
 class OpenAIProvider:
@@ -92,20 +156,11 @@ class OpenAIProvider:
             self._client = OpenAI(api_key=self._api_key, base_url=self._base_url)
         return self._client
 
-    def complete(
-        self,
-        prompt: str,
-        tools: list[ToolSpec],
-        *,
-        system_prompt: str | None = None,
-    ) -> ModelResponse:
+    def _create_and_parse(self, messages: list[dict], tools: list[ToolSpec]) -> ModelResponse:
+        """Issue one chat-completions call and map it to a neutral ModelResponse.
+        Errors and latency are captured on the response, never raised — one bad
+        turn degrades to a recorded failure instead of aborting the dataset."""
         client = self._client_or_create()
-        # OpenAI-style chat: the system prompt is the first message with
-        # role="system"; temperature is a top-level param.
-        messages: list[dict] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
         kwargs: dict = {
             "model": self.model,
             "max_tokens": self._max_tokens,
@@ -127,6 +182,21 @@ class OpenAIProvider:
         out.latency_ms = (time.perf_counter() - t0) * 1000
         return out
 
+    def complete(
+        self,
+        prompt: str,
+        tools: list[ToolSpec],
+        *,
+        system_prompt: str | None = None,
+    ) -> ModelResponse:
+        # OpenAI-style chat: the system prompt is the first message with
+        # role="system"; the user prompt follows.
+        messages: list[dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        return self._create_and_parse(messages, tools)
+
     def continue_with_tool_results(
         self,
         history: list[dict],
@@ -135,5 +205,7 @@ class OpenAIProvider:
         *,
         system_prompt: str | None = None,
     ) -> ModelResponse:
-        # Layer 4 multi-turn for OpenAI/Ollama: future slice.
-        return ModelResponse(error="OpenAI-compat multi-turn not implemented (Layer 4 pending).")
+        # Layer 4 multi-turn: rebuild the whole conversation from the loop's
+        # neutral history + the fresh tool results, then ask for the next move.
+        messages = _build_continue_messages(history, tool_results, system_prompt=system_prompt)
+        return self._create_and_parse(messages, tools)
