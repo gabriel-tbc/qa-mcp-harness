@@ -23,7 +23,7 @@ async def test_loop_executes_tool_then_returns_final_text(connect):
     are captured in the trace."""
     provider = FakeProvider.scripted([
         ModelResponse(
-            tool_calls=[ToolCall("qa_list_runs", {"params": {"response_format": "json"}}, id="t1")],
+            tool_calls=[ToolCall("qa_list_runs", {"response_format": "json"}, id="t1")],
             stop_reason="tool_use",
         ),
         ModelResponse(final_text="there are 6 runs available", stop_reason="end_turn"),
@@ -44,7 +44,7 @@ async def test_loop_caps_at_max_rounds(connect):
     """A misbehaving model that never returns text must be cut off, not loop
     forever. The error is recorded; the run is not aborted."""
     looping = ModelResponse(
-        tool_calls=[ToolCall("qa_list_runs", {"params": {"response_format": "json"}}, id="x")],
+        tool_calls=[ToolCall("qa_list_runs", {"response_format": "json"}, id="x")],
         stop_reason="tool_use",
     )
     # Always asks for a tool — would loop forever without the cap.
@@ -65,11 +65,9 @@ def _regression_check_spec() -> CheckSpec:
         kind="ground-truth-number",
         ground_truth_tool="qa_compare_runs",
         ground_truth_args={
-            "params": {
-                "run_a": "search-25_classification",
-                "run_b": "search-26_classification",
-                "response_format": "json",
-            }
+            "run_a": "search-25_classification",
+            "run_b": "search-26_classification",
+            "response_format": "json",
         },
         ground_truth_path="counts.regressions",
         extract_label="regression",

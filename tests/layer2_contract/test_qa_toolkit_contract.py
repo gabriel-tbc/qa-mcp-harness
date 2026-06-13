@@ -33,7 +33,7 @@ async def test_exposes_expected_tools(connect):
 async def test_qa_list_runs_returns_well_formed_payload(connect):
     async with connect() as session:
         result = await session.call_tool(
-            "qa_list_runs", {"params": {"response_format": "json"}}
+            "qa_list_runs", {"response_format": "json"}
         )
     assert not result.isError, "qa_list_runs reported an error"
     text = result_text(result)
@@ -45,7 +45,7 @@ async def test_qa_get_run_unknown_id_is_actionable(connect):
     the message should point the model at qa_list_runs."""
     async with connect() as session:
         result = await session.call_tool(
-            "qa_get_run", {"params": {"run_id": "definitely-not-a-real-run"}}
+            "qa_get_run", {"run_id": "definitely-not-a-real-run"}
         )
     text = result_text(result)
     assert "Error" in text

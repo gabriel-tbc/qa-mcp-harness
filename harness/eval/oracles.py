@@ -53,7 +53,8 @@ async def ground_truth(session: Any, tool: str, args: dict) -> dict:
     or non-JSON text, we surface that as an `{"_error": ...}` dict so callers
     can decide what to do (Checks then fail explicitly, not silently).
     """
-    # Tools in this MCP wrap arguments under `params` — caller passes that.
+    # The caller passes the tool's arguments as a flat dict (top-level keys);
+    # we pass them straight through to the MCP.
     raw = await session.call_tool(tool, args)
     if getattr(raw, "isError", False):
         return {"_error": _result_text(raw)}
