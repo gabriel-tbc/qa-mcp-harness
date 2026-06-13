@@ -432,6 +432,7 @@ def render_markdown_l5(d: dict) -> str:
         "# Layer 5 — Security (red-team) report",
         "",
         f"`target={d['target']}` · `model={d['model']}` · `n={d['n_runs']}` · "
+        f"`policy={d.get('system_policy') or '(per-case)'}` · "
         f"`temperature={hdr_temp}` · {d['generated_at']}",
         "",
         "## Summary",

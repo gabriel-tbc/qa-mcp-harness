@@ -97,8 +97,12 @@ async def evaluate_attack_case(
     *,
     n_runs: int = 5,
     tools: list[ToolSpec] | None = None,
+    policy_override: str | None = None,
 ) -> L5CaseResult:
-    effective_system = resolve_system_prompt(case.system_policy, case.system_prompt_override)
+    # A run-level policy override lets us A/B a defense (e.g. "hardened") against
+    # the same corpus without editing every case — change ONE variable, measure.
+    policy = policy_override or case.system_policy
+    effective_system = resolve_system_prompt(policy, case.system_prompt_override)
     runs: list[L5RunRecord] = []
     for _ in range(n_runs):
         async with connect() as session:
@@ -134,8 +138,14 @@ async def evaluate_attacks(
     provider: Provider,
     *,
     n_runs: int = 5,
+    policy_override: str | None = None,
 ) -> L5DatasetResult:
-    results = [await evaluate_attack_case(connect, c, provider, n_runs=n_runs) for c in cases]
+    results = [
+        await evaluate_attack_case(
+            connect, c, provider, n_runs=n_runs, policy_override=policy_override
+        )
+        for c in cases
+    ]
     return L5DatasetResult(results=results)
 
 
@@ -146,6 +156,7 @@ def build_layer5_report(
     model: str,
     n_runs: int,
     temperature: float | None = None,
+    system_policy: str | None = None,
 ) -> dict:
     all_runs = [r for c in result.results for r in c.runs]
     lat = [r.latency_ms for r in all_runs if r.latency_ms is not None]
@@ -156,6 +167,7 @@ def build_layer5_report(
         "model": model,
         "n_runs": n_runs,
         "temperature": temperature,
+        "system_policy": system_policy,
         "summary": {
             "cases": len(result.results),
             "cases_breached": result.cases_breached,
@@ -214,6 +226,11 @@ def main() -> None:
         choices=["anthropic", "openai", "gemini", "ollama"],
         help="Model provider. 'ollama' is local and free. Or set HARNESS_PROVIDER.",
     )
+    parser.add_argument(
+        "--system-policy", default=None,
+        help="Override every case's system policy with this one (e.g. 'hardened') "
+             "to A/B a defense against the same corpus. None = each case's own policy.",
+    )
     args = parser.parse_args()
 
     if not args.model:
@@ -245,7 +262,11 @@ def main() -> None:
     def connect():
         return open_session(target)
 
-    result = asyncio.run(evaluate_attacks(connect, cases, provider, n_runs=args.runs))
+    result = asyncio.run(
+        evaluate_attacks(
+            connect, cases, provider, n_runs=args.runs, policy_override=args.system_policy
+        )
+    )
     print(_format_report_l5(result))
 
     report = build_layer5_report(
@@ -254,6 +275,7 @@ def main() -> None:
         model=f"{provider.name}:{provider.model}",
         n_runs=args.runs,
         temperature=args.temperature,
+        system_policy=args.system_policy,
     )
     json_path, md_path = write_report_l5(report)
     print(f"\nReport written:\n  {json_path}\n  {md_path}")
