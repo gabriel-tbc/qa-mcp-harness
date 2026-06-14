@@ -12,6 +12,10 @@ venv/
 # Local config (per-machine). Template: .env.example
 .env
 
+# Third-party red-team references — cloned locally as a payload/technique
+# corpus, never imported as code. See external/README.md.
+external/
+
 # IDE / OS
 .vscode/
 .idea/
