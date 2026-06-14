@@ -31,6 +31,10 @@ class Check:
     expected: Any
     observed: Any
     passed: bool
+    # Which extraction strategy fired (for ground-truth-number). Lets reports
+    # show whether `observed` came from "the model wrote '1' alone" vs "we
+    # found it in the same sentence as the label" — diagnostic, not gating.
+    strategy: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +43,7 @@ class Check:
             "expected": self.expected,
             "observed": self.observed,
             "passed": self.passed,
+            "strategy": self.strategy,
         }
 
 
@@ -84,23 +89,32 @@ def _result_text(raw: Any) -> str:
 
 # ─── Extraction: pull a structured value out of free text ────────────────────
 
-# Extract the integer associated with `label` from prose, structurally.
-# Patterns are tried in order; the FIRST match wins. Explicit assignment
-# (`label: N`, `label = N`, `label is N`) wins over juxtaposition, because
-# juxtaposition can steal a number that belongs to a neighbouring label
-# (e.g. "regressions: 5 fixes: 0" — looking for 'fix', "5 fixes" would
-# wrongly fire if `N + label` ran first).
-def _number_near(label: str, text: str) -> int | None:
+# Extraction strategies. Tried in order; the FIRST that fires wins. The order
+# is from MOST CONFIDENT (the whole text is a bare integer) to LEAST CONFIDENT
+# (we relax to "label and a number are in the same sentence"). Each strategy is
+# narrow on purpose so it either fires confidently or abstains — abstention
+# beats a wrong answer, since the report shows None and you investigate.
+
+
+def _strategy_bare_integer(text: str) -> int | None:
+    """The whole trimmed text is a single integer. Handles prompts like
+    'return only the integer' where the model obeys and skips the prose
+    entirely. Most confident — no label disambiguation needed."""
+    m = re.fullmatch(r"\s*(-?\d+)\s*", text)
+    return int(m.group(1)) if m else None
+
+
+def _strategy_adjacent_to_label(label: str, text: str) -> int | None:
+    """The number sits right next to the label: 'regressions: 3', 'regression
+    is 3', '3 regressions'. Explicit assignment is preferred over juxtaposition
+    (`N label`) so a stray '5 fixes' nearby can't steal the integer that
+    belongs to the next label over."""
     label_re = re.escape(label)
     # Plural suffix: 's' (regression→regressions) OR 'es' (fix→fixes).
     plural = r"(?:e?s)?"
     patterns = [
-        # label: 3 / label = 3 / label is 3 / label count is 3
         rf"\b{label_re}{plural}\s*[:=]\s*(\d+)\b",
         rf"\b{label_re}{plural}\s+(?:count\s+)?(?:is|are|was|were)\s+(\d+)\b",
-        # Number immediately precedes the label, optionally with one adjective
-        # ("3 regressions", "1 real regression"). Bounded to one word between
-        # so it can't span across an unrelated label.
         rf"\b(\d+)\s+(?:\w+\s+)?{label_re}{plural}\b",
     ]
     for pat in patterns:
@@ -110,13 +124,55 @@ def _number_near(label: str, text: str) -> int | None:
     return None
 
 
+def _strategy_same_sentence(label: str, text: str) -> int | None:
+    """Loose fallback: words intervene between the label and the number, but
+    they share a sentence. 'The number of regressions between runs A and B is 1.'
+    Only fires if exactly ONE integer sits in that sentence — multiple ints
+    are ambiguous, so we abstain rather than guess wrong."""
+    label_re = re.escape(label)
+    plural = r"(?:e?s)?"
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
+    found: list[int] = []
+    for sent in sentences:
+        if not re.search(rf"\b{label_re}{plural}\b", sent, flags=re.IGNORECASE):
+            continue
+        ints = [int(x) for x in re.findall(r"\b(\d+)\b", sent)]
+        if len(ints) == 1:
+            found.append(ints[0])
+    # Multiple label-bearing sentences that agree → confident; that disagree → abstain.
+    unique = set(found)
+    return next(iter(unique)) if len(unique) == 1 else None
+
+
 def extract_number(text: str, label: str) -> int | None:
     """Pull the integer the model associated with `label` out of free text.
 
     Returns None when no unambiguous mention is found — callers treat that as
     a failed Check, not as zero (zero is a valid answer; absence is not).
+
+    Three strategies, first-match wins:
+      1. bare_integer       — the whole text is just a number.
+      2. adjacent_to_label  — the number sits right next to the label.
+      3. same_sentence      — fallback for prose with words between them.
     """
-    return _number_near(label, text)
+    return _extract_number_with_strategy(text, label)[0]
+
+
+def _extract_number_with_strategy(text: str, label: str) -> tuple[int | None, str | None]:
+    """Same as `extract_number`, but also returns WHICH strategy fired (or
+    None). Internal helper — lets Check report the matching strategy in the
+    JSON, so a number that came from `bare_integer` is distinguishable from
+    one that came from `same_sentence` when diagnosing a flaky case."""
+    bare = _strategy_bare_integer(text)
+    if bare is not None:
+        return bare, "bare_integer"
+    near = _strategy_adjacent_to_label(label, text)
+    if near is not None:
+        return near, "adjacent_to_label"
+    same = _strategy_same_sentence(label, text)
+    if same is not None:
+        return same, "same_sentence"
+    return None, None
 
 
 # ─── Compose into a Check ────────────────────────────────────────────────────
@@ -124,12 +180,14 @@ def extract_number(text: str, label: str) -> int | None:
 
 def number_check(name: str, expected: int, text: str, label: str) -> Check:
     """A ground-truth-number Check: expected from the MCP, observed extracted
-    from the model's prose, passed if they match exactly."""
-    observed = extract_number(text, label)
+    from the model's prose, passed if they match exactly. Records which
+    extraction strategy fired so a failed run is traceable."""
+    observed, strategy = _extract_number_with_strategy(text, label)
     return Check(
         name=name,
         kind="ground-truth-number",
         expected=expected,
         observed=observed,
         passed=observed is not None and observed == expected,
+        strategy=strategy,
     )
